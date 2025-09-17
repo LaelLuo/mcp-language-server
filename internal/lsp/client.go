@@ -44,9 +44,9 @@ type Client struct {
 	diagnostics   map[protocol.DocumentUri][]protocol.Diagnostic
 	diagnosticsMu sync.RWMutex
 
-	// Files are currently opened by the LSP
-	openFiles   map[string]*OpenFileInfo
-	openFilesMu sync.RWMutex
+    // Files currently opened by the LSP (keyed by canonical DocumentUri)
+    openFiles   map[protocol.DocumentUri]*OpenFileInfo
+    openFilesMu sync.RWMutex
 }
 
 func NewClient(command string, args ...string) (*Client, error) {
@@ -69,17 +69,17 @@ func NewClient(command string, args ...string) (*Client, error) {
 		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
-	client := &Client{
-		Cmd:                   cmd,
-		stdin:                 stdin,
-		stdout:                bufio.NewReader(stdout),
-		stderr:                stderr,
-		handlers:              make(map[string]chan *Message),
-		notificationHandlers:  make(map[string]NotificationHandler),
-		serverRequestHandlers: make(map[string]ServerRequestHandler),
-		diagnostics:           make(map[protocol.DocumentUri][]protocol.Diagnostic),
-		openFiles:             make(map[string]*OpenFileInfo),
-	}
+    client := &Client{
+        Cmd:                   cmd,
+        stdin:                 stdin,
+        stdout:                bufio.NewReader(stdout),
+        stderr:                stderr,
+        handlers:              make(map[string]chan *Message),
+        notificationHandlers:  make(map[string]NotificationHandler),
+        serverRequestHandlers: make(map[string]ServerRequestHandler),
+        diagnostics:           make(map[protocol.DocumentUri][]protocol.Diagnostic),
+        openFiles:             make(map[protocol.DocumentUri]*OpenFileInfo),
+    }
 
 	// Start the LSP server process
 	if err := cmd.Start(); err != nil {
@@ -290,40 +290,43 @@ type OpenFileInfo struct {
 }
 
 func (c *Client) OpenFile(ctx context.Context, filepath string) error {
-    docURI := protocol.URIFromPath(filepath)
+    uri := protocol.URIFromPath(filepath)
 
+    // Reserve the open entry first to avoid duplicated didOpen in races
     c.openFilesMu.Lock()
-    if _, exists := c.openFiles[string(docURI)]; exists {
+    if _, exists := c.openFiles[uri]; exists {
         c.openFilesMu.Unlock()
         return nil // Already open
     }
-	c.openFilesMu.Unlock()
+    c.openFiles[uri] = &OpenFileInfo{Version: 1, URI: uri}
+    c.openFilesMu.Unlock()
 
-	// Skip files that do not exist or cannot be read
-	content, err := os.ReadFile(filepath)
-	if err != nil {
-		return fmt.Errorf("error reading file: %w", err)
-	}
+    // Read file content
+    content, err := os.ReadFile(filepath)
+    if err != nil {
+        // Roll back reservation on failure
+        c.openFilesMu.Lock()
+        delete(c.openFiles, uri)
+        c.openFilesMu.Unlock()
+        return fmt.Errorf("error reading file: %w", err)
+    }
 
     params := protocol.DidOpenTextDocumentParams{
         TextDocument: protocol.TextDocumentItem{
-            URI:        docURI,
-            LanguageID: DetectLanguageID(filepath),
+            URI:        uri,
+            LanguageID: DetectLanguageID(uri.Path()),
             Version:    1,
             Text:       string(content),
         },
     }
 
-	if err := c.Notify(ctx, "textDocument/didOpen", params); err != nil {
-		return err
-	}
-
-    c.openFilesMu.Lock()
-    c.openFiles[string(docURI)] = &OpenFileInfo{
-        Version: 1,
-        URI:     docURI,
+    if err := c.Notify(ctx, "textDocument/didOpen", params); err != nil {
+        // Roll back reservation if notify fails
+        c.openFilesMu.Lock()
+        delete(c.openFiles, uri)
+        c.openFilesMu.Unlock()
+        return err
     }
-    c.openFilesMu.Unlock()
 
     lspLogger.Debug("Opened file: %s", filepath)
 
@@ -331,7 +334,7 @@ func (c *Client) OpenFile(ctx context.Context, filepath string) error {
 }
 
 func (c *Client) NotifyChange(ctx context.Context, filepath string) error {
-    docURI := protocol.URIFromPath(filepath)
+    uri := protocol.URIFromPath(filepath)
 
 	content, err := os.ReadFile(filepath)
 	if err != nil {
@@ -339,11 +342,11 @@ func (c *Client) NotifyChange(ctx context.Context, filepath string) error {
 	}
 
     c.openFilesMu.Lock()
-    fileInfo, isOpen := c.openFiles[string(docURI)]
-	if !isOpen {
-		c.openFilesMu.Unlock()
-		return fmt.Errorf("cannot notify change for unopened file: %s", filepath)
-	}
+    fileInfo, isOpen := c.openFiles[uri]
+    if !isOpen {
+        c.openFilesMu.Unlock()
+        return fmt.Errorf("cannot notify change for unopened file: %s", filepath)
+    }
 
 	// Increment version
 	fileInfo.Version++
@@ -353,7 +356,7 @@ func (c *Client) NotifyChange(ctx context.Context, filepath string) error {
     params := protocol.DidChangeTextDocumentParams{
         TextDocument: protocol.VersionedTextDocumentIdentifier{
             TextDocumentIdentifier: protocol.TextDocumentIdentifier{
-                URI: docURI,
+                URI: uri,
             },
             Version: version,
         },
@@ -370,10 +373,10 @@ func (c *Client) NotifyChange(ctx context.Context, filepath string) error {
 }
 
 func (c *Client) CloseFile(ctx context.Context, filepath string) error {
-    docURI := protocol.URIFromPath(filepath)
+    uri := protocol.URIFromPath(filepath)
 
     c.openFilesMu.Lock()
-    if _, exists := c.openFiles[string(docURI)]; !exists {
+    if _, exists := c.openFiles[uri]; !exists {
         c.openFilesMu.Unlock()
         return nil // Already closed
     }
@@ -381,7 +384,7 @@ func (c *Client) CloseFile(ctx context.Context, filepath string) error {
 
     params := protocol.DidCloseTextDocumentParams{
         TextDocument: protocol.TextDocumentIdentifier{
-            URI: docURI,
+            URI: uri,
         },
     }
 	lspLogger.Debug("Closing file: %s", params.TextDocument.URI.Dir())
@@ -390,14 +393,14 @@ func (c *Client) CloseFile(ctx context.Context, filepath string) error {
 	}
 
     c.openFilesMu.Lock()
-    delete(c.openFiles, string(docURI))
+    delete(c.openFiles, uri)
     c.openFilesMu.Unlock()
 
 	return nil
 }
 
 func (c *Client) IsFileOpen(filepath string) bool {
-    uri := string(protocol.URIFromPath(filepath))
+    uri := protocol.URIFromPath(filepath)
     c.openFilesMu.RLock()
     defer c.openFilesMu.RUnlock()
     _, exists := c.openFiles[uri]
@@ -406,16 +409,16 @@ func (c *Client) IsFileOpen(filepath string) bool {
 
 // CloseAllFiles closes all currently open files
 func (c *Client) CloseAllFiles(ctx context.Context) {
-	c.openFilesMu.Lock()
-	filesToClose := make([]string, 0, len(c.openFiles))
+    c.openFilesMu.Lock()
+    filesToClose := make([]string, 0, len(c.openFiles))
 
     // First collect all URIs that need to be closed
     for uri := range c.openFiles {
-        // Convert URI back to file path using protocol utilities
-        filePath := protocol.DocumentUri(uri).Path()
+        // Convert canonical DocumentUri back to file path
+        filePath := uri.Path()
         filesToClose = append(filesToClose, filePath)
     }
-	c.openFilesMu.Unlock()
+    c.openFilesMu.Unlock()
 
 	// Then close them all
 	for _, filePath := range filesToClose {

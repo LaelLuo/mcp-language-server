@@ -220,7 +220,7 @@ func (w *WorkspaceWatcher) WatchWorkspace(ctx context.Context, workspacePath str
 				return
 			}
 
-            uri := string(protocol.URIFromPath(event.Name))
+			uri := string(protocol.URIFromPath(event.Name))
 
 			// Check if this is a file (not a directory) and should be excluded
 			isFile := false
@@ -636,16 +636,22 @@ func (w *WorkspaceWatcher) openMatchingFile(ctx context.Context, path string) {
 		return
 	}
 
-	// Skip excluded files
-	if w.shouldExcludeFile(path) {
-		return
-	}
+    // Skip excluded files
+    if w.shouldExcludeFile(path) {
+        return
+    }
+
+    // Skip files with unknown language (e.g., txt), to avoid noisy opens
+    // Only open files that map to a known LSP language ID
+    if lsp.DetectLanguageID(path) == protocol.LanguageKind("") {
+        return
+    }
 
 	// Check if this path should be watched according to server registrations
-	if watched, _ := w.isPathWatched(path); watched {
-		// Don't need to check if it's already open - the client.OpenFile handles that
-		if err := w.client.OpenFile(ctx, path); err != nil && watcherLogger.IsLevelEnabled(logging.LevelDebug) {
-			watcherLogger.Debug("Error opening file %s: %v", path, err)
-		}
+    if watched, _ := w.isPathWatched(path); watched {
+        // Don't need to check if it's already open - the client.OpenFile handles that
+        if err := w.client.OpenFile(ctx, path); err != nil && watcherLogger.IsLevelEnabled(logging.LevelDebug) {
+            watcherLogger.Debug("Error opening file %s: %v", path, err)
+        }
 	}
 }
