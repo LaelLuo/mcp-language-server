@@ -22,6 +22,9 @@ type Client struct {
 	stdout *bufio.Reader
 	stderr io.ReadCloser
 
+	// Protect writes to the LSP server stdin so messages don't interleave
+	writeMu sync.Mutex
+
 	// Request ID counter
 	nextID atomic.Int32
 
