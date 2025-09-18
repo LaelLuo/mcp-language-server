@@ -1,6 +1,6 @@
 ---
 
-/TEST_OUTPUT/workspace/clangd/src/consumer.cpp
+/TEST_OUTPUT/workspace/src/consumer.cpp
 References in File: 1
 At: L14:C28
 
@@ -14,7 +14,7 @@ At: L14:C28
 
 ---
 
-/TEST_OUTPUT/workspace/clangd/src/main.cpp
+/TEST_OUTPUT/workspace/src/main.cpp
 References in File: 1
 At: L11:C3
 
