@@ -40,10 +40,10 @@ func RenameSymbol(ctx context.Context, client *lsp.Client, filePath string, line
 	// Execute the rename directly
 
 	// Execute the rename operation
-	workspaceEdit, err := client.Rename(ctx, params)
-	if err != nil {
-		return "", fmt.Errorf("failed to rename symbol: %v", err)
-	}
+    workspaceEdit, err := client.Rename(ctx, params)
+    if err != nil {
+        return "", fmt.Errorf("failed to rename symbol: %v", err)
+    }
 
 	// Count the changes that will be made
 	changeCount := 0
@@ -123,5 +123,5 @@ func RenameSymbol(ctx context.Context, client *lsp.Client, filePath string, line
 
 	// Generate a summary of changes made
 	return fmt.Sprintf("Successfully renamed symbol to '%s'.\nUpdated %d occurrences across %d files:\n%s",
-		newName, changeCount, fileCount, locationsBuilder.String()), nil
+		newName, changeCount, fileCount, locationsBuilder.String()) + "\n\n", nil
 }

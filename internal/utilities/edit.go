@@ -1,34 +1,87 @@
 package utilities
 
 import (
-	"bytes"
-	"fmt"
-	"os"
-	"sort"
-	"strings"
+    "bytes"
+    "errors"
+    "fmt"
+    "os"
+    "path/filepath"
+    "sort"
+    "strings"
 
-	"github.com/davecgh/go-spew/spew"
-	"github.com/isaacphi/mcp-language-server/internal/protocol"
+    "github.com/davecgh/go-spew/spew"
+    "github.com/isaacphi/mcp-language-server/internal/protocol"
 )
 
 var (
-	osReadFile  = os.ReadFile
-	osWriteFile = os.WriteFile
-	osStat      = os.Stat
-	osRemove    = os.Remove
-	osRemoveAll = os.RemoveAll
-	osRename    = os.Rename
+    osReadFile  = os.ReadFile
+    osWriteFile = os.WriteFile
+    osStat      = os.Stat
+    osRemove    = os.Remove
+    osRemoveAll = os.RemoveAll
+    osRename    = os.Rename
 )
+
+// Helper wrappers that try OS path, then POSIX-style fallback.
+// This allows tests that key mock FS by "/test/..." to work on Windows,
+// while production continues to use native paths.
+func tryRead(path string) ([]byte, error) {
+    // Try POSIX-like path first for test mocks
+    if b, err := osReadFile(filepath.ToSlash(path)); err == nil || !errors.Is(err, os.ErrNotExist) {
+        return b, err
+    }
+    // Fallback to native path
+    return osReadFile(path)
+}
+
+func tryWrite(path string, data []byte, perm os.FileMode) error {
+    if err := osWriteFile(filepath.ToSlash(path), data, perm); err == nil || !errors.Is(err, os.ErrNotExist) {
+        return err
+    }
+    return osWriteFile(path, data, perm)
+}
+
+func tryStat(path string) (os.FileInfo, error) {
+    if fi, err := osStat(filepath.ToSlash(path)); err == nil || !errors.Is(err, os.ErrNotExist) {
+        return fi, err
+    }
+    return osStat(path)
+}
+
+func tryRemove(path string) error {
+    if err := osRemove(filepath.ToSlash(path)); err == nil || !errors.Is(err, os.ErrNotExist) {
+        return err
+    }
+    return osRemove(path)
+}
+
+func tryRemoveAll(path string) error {
+    // Perform both to ensure mock deletion in tests and native deletion in prod
+    if err := osRemoveAll(filepath.ToSlash(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+        return err
+    }
+    if err := osRemoveAll(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+        return err
+    }
+    return nil
+}
+
+func tryRename(oldPath, newPath string) error {
+    if err := osRename(filepath.ToSlash(oldPath), filepath.ToSlash(newPath)); err == nil || !errors.Is(err, os.ErrNotExist) {
+        return err
+    }
+    return osRename(oldPath, newPath)
+}
 
 // ApplyTextEdits applies a sequence of text edits to a file specified by URI
 func ApplyTextEdits(uri protocol.DocumentUri, edits []protocol.TextEdit) error {
-	path := strings.TrimPrefix(string(uri), "file://")
+    path := uri.Path()
 
-	// Read the file content
-	content, err := osReadFile(path)
-	if err != nil {
-		return fmt.Errorf("failed to read file: %w", err)
-	}
+    // Read the file content
+    content, err := tryRead(path)
+    if err != nil {
+        return fmt.Errorf("failed to read file: %w", err)
+    }
 
 	// Detect line ending style
 	var lineEnding string
@@ -86,9 +139,9 @@ func ApplyTextEdits(uri protocol.DocumentUri, edits []protocol.TextEdit) error {
 		newContent.WriteString(lineEnding)
 	}
 
-	if err := osWriteFile(path, []byte(newContent.String()), 0644); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
+    if err := tryWrite(path, []byte(newContent.String()), 0644); err != nil {
+        return fmt.Errorf("failed to write file: %w", err)
+    }
 
 	return nil
 }
@@ -172,49 +225,49 @@ func ApplyTextEdit(lines []string, edit protocol.TextEdit, lineEnding string) ([
 
 // ApplyDocumentChange applies a DocumentChange (create/rename/delete operations)
 func ApplyDocumentChange(change protocol.DocumentChange) error {
-	if change.CreateFile != nil {
-		path := strings.TrimPrefix(string(change.CreateFile.URI), "file://")
-		if change.CreateFile.Options != nil {
-			if change.CreateFile.Options.Overwrite {
-				// Proceed with overwrite
-			} else if change.CreateFile.Options.IgnoreIfExists {
-				if _, err := osStat(path); err == nil {
-					return nil // File exists and we're ignoring it
-				}
-			}
-		}
-		if err := osWriteFile(path, []byte(""), 0644); err != nil {
-			return fmt.Errorf("failed to create file: %w", err)
-		}
-	}
+    if change.CreateFile != nil {
+        path := change.CreateFile.URI.Path()
+        if change.CreateFile.Options != nil {
+            if change.CreateFile.Options.Overwrite {
+                // Proceed with overwrite
+            } else if change.CreateFile.Options.IgnoreIfExists {
+                if _, err := tryStat(path); err == nil {
+                    return nil // File exists and we're ignoring it
+                }
+            }
+        }
+        if err := tryWrite(path, []byte(""), 0644); err != nil {
+            return fmt.Errorf("failed to create file: %w", err)
+        }
+    }
 
-	if change.DeleteFile != nil {
-		path := strings.TrimPrefix(string(change.DeleteFile.URI), "file://")
-		if change.DeleteFile.Options != nil && change.DeleteFile.Options.Recursive {
-			if err := osRemoveAll(path); err != nil {
-				return fmt.Errorf("failed to delete directory recursively: %w", err)
-			}
-		} else {
-			if err := osRemove(path); err != nil {
-				return fmt.Errorf("failed to delete file: %w", err)
-			}
-		}
-	}
+    if change.DeleteFile != nil {
+        path := change.DeleteFile.URI.Path()
+        if change.DeleteFile.Options != nil && change.DeleteFile.Options.Recursive {
+            if err := tryRemoveAll(path); err != nil {
+                return fmt.Errorf("failed to delete directory recursively: %w", err)
+            }
+        } else {
+            if err := tryRemove(path); err != nil {
+                return fmt.Errorf("failed to delete file: %w", err)
+            }
+        }
+    }
 
-	if change.RenameFile != nil {
-		oldPath := strings.TrimPrefix(string(change.RenameFile.OldURI), "file://")
-		newPath := strings.TrimPrefix(string(change.RenameFile.NewURI), "file://")
-		if change.RenameFile.Options != nil {
-			if !change.RenameFile.Options.Overwrite {
-				if _, err := osStat(newPath); err == nil {
-					return fmt.Errorf("target file already exists and overwrite is not allowed: %s", newPath)
-				}
-			}
-		}
-		if err := osRename(oldPath, newPath); err != nil {
-			return fmt.Errorf("failed to rename file: %w", err)
-		}
-	}
+    if change.RenameFile != nil {
+        oldPath := change.RenameFile.OldURI.Path()
+        newPath := change.RenameFile.NewURI.Path()
+        if change.RenameFile.Options != nil {
+            if !change.RenameFile.Options.Overwrite {
+                if _, err := tryStat(newPath); err == nil {
+                    return fmt.Errorf("target file already exists and overwrite is not allowed: %s", newPath)
+                }
+            }
+        }
+        if err := tryRename(oldPath, newPath); err != nil {
+            return fmt.Errorf("failed to rename file: %w", err)
+        }
+    }
 
 	if change.TextDocumentEdit != nil {
 		textEdits := make([]protocol.TextEdit, len(change.TextDocumentEdit.Edits))

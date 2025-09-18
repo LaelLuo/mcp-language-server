@@ -100,7 +100,7 @@ func TestWatcherBasicFunctionality(t *testing.T) {
 		}
 
 		// Check for create notification
-		uri := "file://" + filePath
+		uri := string(protocol.URIFromPath(filePath))
 		count := mockClient.CountEvents(uri, protocol.FileChangeType(protocol.Created))
 		if count == 0 {
 			t.Errorf("No create event received for %s", filePath)
@@ -130,7 +130,7 @@ func TestWatcherBasicFunctionality(t *testing.T) {
 		}
 
 		// Check for change notification
-		uri := "file://" + filePath
+		uri := string(protocol.URIFromPath(filePath))
 		count := mockClient.CountEvents(uri, protocol.FileChangeType(protocol.Changed))
 		if count == 0 {
 			t.Errorf("No change event received for %s", filePath)
@@ -160,7 +160,7 @@ func TestWatcherBasicFunctionality(t *testing.T) {
 		}
 
 		// Check for delete notification
-		uri := "file://" + filePath
+		uri := string(protocol.URIFromPath(filePath))
 		count := mockClient.CountEvents(uri, protocol.FileChangeType(protocol.Deleted))
 		if count == 0 {
 			t.Errorf("No delete event received for %s", filePath)
@@ -327,7 +327,7 @@ func TestGitignoreIntegration(t *testing.T) {
 		}
 
 		// Check that notification was sent
-		uri := "file://" + filePath
+		uri := string(protocol.URIFromPath(filePath))
 		count := mockClient.CountEvents(uri, protocol.FileChangeType(protocol.Created))
 		if count == 0 {
 			t.Errorf("No create event received for non-ignored file %s", filePath)
@@ -421,7 +421,7 @@ func TestRapidChangesDebouncing(t *testing.T) {
 		time.Sleep(config.DebounceTime + 200*time.Millisecond)
 
 		// Check for change notifications
-		uri := "file://" + filePath
+		uri := string(protocol.URIFromPath(filePath))
 		count := mockClient.CountEvents(uri, protocol.FileChangeType(protocol.Changed))
 
 		// We should get only 1 or at most 2 change notifications due to debouncing

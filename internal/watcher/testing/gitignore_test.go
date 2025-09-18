@@ -191,7 +191,7 @@ exact_file.txt
 			t.Fatal("Timed out waiting for file creation event")
 		}
 
-		uri := "file://" + filePath
+        uri := string(protocol.URIFromPath(filePath))
 		count := mockClient.CountEvents(uri, protocol.FileChangeType(protocol.Created))
 		if count == 0 {
 			t.Errorf("No create event received for non-ignored file %s", filePath)

@@ -276,17 +276,20 @@ func (w *WorkspaceWatcher) WatchWorkspace(ctx context.Context, workspacePath str
 			// Check if this path should be watched according to server registrations
 			if watched, watchKind := w.isPathWatched(event.Name); watched {
 				switch {
-				case event.Op&fsnotify.Write != 0:
-					if watchKind&protocol.WatchChange != 0 {
-						w.debounceHandleFileEvent(ctx, uri, protocol.FileChangeType(protocol.Changed))
-					}
-				case event.Op&fsnotify.Create != 0:
-					// Already handled earlier in the event loop
-					// Just send the notification if needed
-					info, _ := os.Stat(event.Name)
-					if info != nil && !info.IsDir() && watchKind&protocol.WatchCreate != 0 {
-						w.debounceHandleFileEvent(ctx, uri, protocol.FileChangeType(protocol.Created))
-					}
+            case event.Op&fsnotify.Write != 0:
+                if isFile && watchKind&protocol.WatchChange != 0 {
+                    w.debounceHandleFileEvent(ctx, uri, protocol.FileChangeType(protocol.Changed))
+                }
+            case event.Op&fsnotify.Create != 0:
+                // Emit Create immediately so it precedes any debounced Changed events.
+                // Do not send create notifications for directories.
+                if watchKind&protocol.WatchCreate != 0 {
+                    if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+                        // Skip directory notifications
+                    } else {
+                        w.handleFileEvent(ctx, uri, protocol.FileChangeType(protocol.Created))
+                    }
+                }
 				case event.Op&fsnotify.Remove != 0:
 					if watchKind&protocol.WatchDelete != 0 {
 						w.handleFileEvent(ctx, uri, protocol.FileChangeType(protocol.Deleted))
@@ -518,33 +521,37 @@ func (w *WorkspaceWatcher) debounceHandleFileEvent(ctx context.Context, uri stri
 		timer.Stop()
 	}
 
-	// Create new timer
-	w.debounceMap[key] = time.AfterFunc(w.config.DebounceTime, func() {
-		w.handleFileEvent(ctx, uri, changeType)
+    // Create new timer
+    w.debounceMap[key] = time.AfterFunc(w.config.DebounceTime, func() {
+        // Skip if shutting down
+        select {
+        case <-ctx.Done():
+            // drop event
+        default:
+            w.handleFileEvent(ctx, uri, changeType)
+        }
 
-		// Cleanup timer after execution
-		w.debounceMu.Lock()
-		delete(w.debounceMap, key)
-		w.debounceMu.Unlock()
-	})
+        // Cleanup timer after execution
+        w.debounceMu.Lock()
+        delete(w.debounceMap, key)
+        w.debounceMu.Unlock()
+    })
 }
 
 // handleFileEvent sends file change notifications
 func (w *WorkspaceWatcher) handleFileEvent(ctx context.Context, uri string, changeType protocol.FileChangeType) {
-	// If the file is open and it's a change event, use didChange notification
-	filePath := uri[7:] // Remove "file://" prefix
-	if changeType == protocol.FileChangeType(protocol.Changed) && w.client.IsFileOpen(filePath) {
-		err := w.client.NotifyChange(ctx, filePath)
-		if err != nil {
-			watcherLogger.Error("Error notifying change: %v", err)
-		}
-		return
-	}
-
-	// Notify LSP server about the file event using didChangeWatchedFiles
-	if err := w.notifyFileEvent(ctx, uri, changeType); err != nil {
-		watcherLogger.Error("Error notifying LSP server about file event: %v", err)
-	}
+    // Early abort on shutdown
+    select {
+    case <-ctx.Done():
+        return
+    default:
+    }
+    // Always notify LSP server about the file event using didChangeWatchedFiles.
+    // Open document content should be managed via textDocument/didChange by the client/editor,
+    // not inferred from filesystem watchers to avoid spurious version bumps and cancellations.
+    if err := w.notifyFileEvent(ctx, uri, changeType); err != nil {
+        watcherLogger.Error("Error notifying LSP server about file event: %v", err)
+    }
 }
 
 // notifyFileEvent sends a didChangeWatchedFiles notification for a file event
@@ -588,18 +595,28 @@ func (w *WorkspaceWatcher) shouldExcludeDir(dirPath string) bool {
 
 // shouldExcludeFile returns true if the file should be excluded from opening
 func (w *WorkspaceWatcher) shouldExcludeFile(filePath string) bool {
-	fileName := filepath.Base(filePath)
+    fileName := filepath.Base(filePath)
 
-	// Skip dot files
-	if strings.HasPrefix(fileName, ".") {
-		return true
-	}
+    // Skip dot files
+    if strings.HasPrefix(fileName, ".") {
+        return true
+    }
 
-	// Check file extension
-	ext := strings.ToLower(filepath.Ext(filePath))
-	if w.config.ExcludedFileExtensions[ext] || w.config.LargeBinaryExtensions[ext] {
-		return true
-	}
+    // Exclude files within excluded directories (e.g., target, node_modules)
+    // Normalize to forward slashes for substring checks
+    normPath := filepath.ToSlash(filePath)
+    for dir := range w.config.ExcludedDirs {
+        // Match as a path segment to avoid false positives
+        if strings.Contains(normPath, "/"+dir+"/") {
+            return true
+        }
+    }
+
+    // Check file extension
+    ext := strings.ToLower(filepath.Ext(filePath))
+    if w.config.ExcludedFileExtensions[ext] || w.config.LargeBinaryExtensions[ext] {
+        return true
+    }
 
 	// Skip temporary files
 	if strings.HasSuffix(filePath, "~") {
