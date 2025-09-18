@@ -287,6 +287,8 @@ func (c *Client) WaitForServerReady(ctx context.Context) error {
 type OpenFileInfo struct {
 	Version int32
 	URI     protocol.DocumentUri
+    // Simple content hash to avoid emitting spurious didChange when content is unchanged
+    contentHash uint64
 }
 
 func (c *Client) OpenFile(ctx context.Context, filepath string) error {
@@ -348,10 +350,19 @@ func (c *Client) NotifyChange(ctx context.Context, filepath string) error {
         return fmt.Errorf("cannot notify change for unopened file: %s", filepath)
     }
 
+    // If content is unchanged, skip sending didChange to avoid spurious cancellations
+    newHash := computeHash(content)
+    if newHash == fileInfo.contentHash {
+        c.openFilesMu.Unlock()
+        lspLogger.Debug("Skip didChange for %s: content unchanged", filepath)
+        return nil
+    }
+
 	// Increment version
-	fileInfo.Version++
-	version := fileInfo.Version
-	c.openFilesMu.Unlock()
+    fileInfo.Version++
+    version := fileInfo.Version
+    fileInfo.contentHash = newHash
+    c.openFilesMu.Unlock()
 
     params := protocol.DidChangeTextDocumentParams{
         TextDocument: protocol.VersionedTextDocumentIdentifier{
@@ -432,8 +443,19 @@ func (c *Client) CloseAllFiles(ctx context.Context) {
 }
 
 func (c *Client) GetFileDiagnostics(uri protocol.DocumentUri) []protocol.Diagnostic {
-	c.diagnosticsMu.RLock()
-	defer c.diagnosticsMu.RUnlock()
+    c.diagnosticsMu.RLock()
+    defer c.diagnosticsMu.RUnlock()
 
-	return c.diagnostics[uri]
+    return c.diagnostics[uri]
+}
+
+// computeHash calculates a simple non-cryptographic hash for content comparison
+func computeHash(b []byte) uint64 {
+    var h uint64 = 1469598103934665603 // FNV-1a 64-bit offset basis
+    const prime uint64 = 1099511628211
+    for _, c := range b {
+        h ^= uint64(c)
+        h *= prime
+    }
+    return h
 }
