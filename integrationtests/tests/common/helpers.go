@@ -93,32 +93,43 @@ func CleanupTestSuites(suites ...*TestSuite) {
 
 // normalizePaths replaces absolute paths in the result with placeholder paths for consistent snapshots
 func normalizePaths(_ *testing.T, input string) string {
-	// No need to get the repo root - we're just looking for patterns
-
-	// Simple approach: just replace any path segments that contain workspace/
-	lines := strings.Split(input, "\n")
-	for i, line := range lines {
-		// Any line containing a path to a workspace file needs normalization
-		if strings.Contains(line, "/workspace/") {
-			// Extract everything after /workspace/
-			parts := strings.Split(line, "/workspace/")
-			if len(parts) > 1 {
-				// Replace with a simple placeholder path
-				lines[i] = "/TEST_OUTPUT/workspace/" + parts[1]
-			}
-		}
-		// Some tests, e.g. clangd, may include fully qualified paths to the base /workspaces/ directory
-		if strings.Contains(line, "/workspaces/") {
-			// Extract everything after /workspace/
-			parts := strings.Split(line, "/workspaces/")
-			if len(parts) > 1 {
-				// Replace with a simple placeholder path
-				lines[i] = "/TEST_OUTPUT/workspace/" + parts[1]
-			}
-		}
-	}
-
-	return strings.Join(lines, "\n")
+    // Normalize only file path lines; do not touch code snippets
+    lines := strings.Split(input, "\n")
+    for i, line := range lines {
+        // POSIX-style paths
+        if strings.Contains(line, "/workspace/") {
+            parts := strings.Split(line, "/workspace/")
+            if len(parts) > 1 {
+                lines[i] = "/TEST_OUTPUT/workspace/" + parts[1]
+                continue
+            }
+        }
+        if strings.Contains(line, "/workspaces/") {
+            parts := strings.Split(line, "/workspaces/")
+            if len(parts) > 1 {
+                lines[i] = "/TEST_OUTPUT/workspace/" + parts[1]
+                continue
+            }
+        }
+        // Windows-style paths
+        if strings.Contains(line, "\\workspace\\") {
+            parts := strings.Split(line, "\\workspace\\")
+            if len(parts) > 1 {
+                lines[i] = "/TEST_OUTPUT/workspace/" + strings.ReplaceAll(parts[1], "\\", "/")
+                continue
+            }
+        }
+        if strings.Contains(line, "\\workspaces\\") {
+            parts := strings.Split(line, "\\workspaces\\")
+            if len(parts) > 1 {
+                lines[i] = "/TEST_OUTPUT/workspace/" + strings.ReplaceAll(parts[1], "\\", "/")
+                continue
+            }
+        }
+        // Otherwise keep the line as-is
+        lines[i] = line
+    }
+    return strings.Join(lines, "\n")
 }
 
 // FindRepoRoot locates the repository root by looking for specific indicators
@@ -151,8 +162,18 @@ func FindRepoRoot() (string, error) {
 // SnapshotTest compares the actual result against an expected result file
 // If the file doesn't exist or UPDATE_SNAPSHOTS=true env var is set, it will update the snapshot
 func SnapshotTest(t *testing.T, languageName, toolName, testName, actualResult string) {
-	// Normalize paths in the result to avoid system-specific paths in snapshots
-	actualResult = normalizePaths(t, actualResult)
+    // Normalize paths in the result to avoid system-specific paths in snapshots
+    actualResult = normalizePaths(t, actualResult)
+
+    // Helper: normalize line endings and ignore trailing newlines for robust comparisons
+    normalizeEOL := func(s string) string {
+        // Convert CRLF/CR to LF
+        s = strings.ReplaceAll(s, "\r\n", "\n")
+        s = strings.ReplaceAll(s, "\r", "\n")
+        // Ignore trailing newlines (treat different counts as equivalent)
+        s = strings.TrimRight(s, "\n")
+        return s
+    }
 
 	// Get the absolute path to the snapshots directory
 	repoRoot, err := FindRepoRoot()
@@ -190,11 +211,11 @@ func SnapshotTest(t *testing.T, languageName, toolName, testName, actualResult s
 	if err != nil {
 		t.Fatalf("Failed to read snapshot: %v", err)
 	}
-	expected := string(expectedBytes)
+    expected := string(expectedBytes)
 
-	// Compare the results
-	if expected != actualResult {
-		t.Errorf("Result doesn't match snapshot.\nExpected:\n%s\n\nActual:\n%s", expected, actualResult)
+    // Compare the results
+    if normalizeEOL(expected) != normalizeEOL(actualResult) {
+        t.Errorf("Result doesn't match snapshot.\nExpected:\n%s\n\nActual:\n%s", expected, actualResult)
 
 		// Create a diff file for debugging
 		diffFile := snapshotFile + ".diff"

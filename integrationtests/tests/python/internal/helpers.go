@@ -4,12 +4,17 @@ package internal
 import (
 	"path/filepath"
 	"testing"
+    "os/exec"
 
 	"github.com/isaacphi/mcp-language-server/integrationtests/tests/common"
 )
 
 // GetTestSuite returns a test suite for Python language server tests
 func GetTestSuite(t *testing.T) *common.TestSuite {
+    // Skip if pyright-langserver is not available
+    if _, err := exec.LookPath("pyright-langserver"); err != nil {
+        t.Skipf("Skipping Python tests: %v", err)
+    }
 	// Configure Python LSP (pyright)
 	repoRoot, err := filepath.Abs("../../../..")
 	if err != nil {

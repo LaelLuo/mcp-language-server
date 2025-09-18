@@ -4,12 +4,17 @@ package internal
 import (
 	"path/filepath"
 	"testing"
+    "os/exec"
 
 	"github.com/isaacphi/mcp-language-server/integrationtests/tests/common"
 )
 
 // GetTestSuite returns a test suite for TypeScript language server tests
 func GetTestSuite(t *testing.T) *common.TestSuite {
+    // Skip if typescript-language-server is not available
+    if _, err := exec.LookPath("typescript-language-server"); err != nil {
+        t.Skipf("Skipping TypeScript tests: %v", err)
+    }
 	// Configure TypeScript LSP
 	repoRoot, err := filepath.Abs("../../../..")
 	if err != nil {
